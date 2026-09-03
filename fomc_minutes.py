@@ -214,10 +214,25 @@ def pull_latest_fomc_minutes(
     )
 
 
-def _download_html(session: requests.Session, url: str) -> str:
-    response = session.get(url, timeout=(30, 120), allow_redirects=True)
+def _download_html(
+    session: requests.Session,
+    url: str,
+) -> str:
+    """
+    Download one Federal Reserve HTML page
+    and decode it as UTF-8.
+    """
+    response = session.get(
+        url,
+        timeout=(30, 120),
+        allow_redirects=True,
+    )
+
     response.raise_for_status()
-    return response.text
+
+    return response.content.decode(
+        "utf-8"
+    )
 
 
 def _extract_meeting_date_from_url(url: str) -> Optional[str]:
@@ -233,22 +248,102 @@ def _extract_meeting_date_from_url(url: str) -> Optional[str]:
         return None
 
 
-def _extract_minutes_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    for element in soup(
-        ["script", "style", "nav", "header", "footer", "aside", "noscript", "form"]
-    ):
-        element.decompose()
+def _extract_minutes_text(
+    html: str,
+) -> str:
+    """
+    Extract clean FOMC minutes text from Federal Reserve HTML.
+    """
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
 
-    article = soup.find("div", id="article") or soup.find("main")
+    article = soup.find(
+        "div",
+        id="article",
+    )
+
     if article is None:
-        raise RuntimeError("The Fed page loaded, but the minutes article was not found.")
+        article = soup.find("main")
 
-    minutes_text = article.get_text(separator="\n", strip=True)
+    if article is None:
+        raise RuntimeError(
+            "The Federal Reserve page loaded, but the "
+            "minutes article could not be located."
+        )
+
+    # Remove browser-navigation links such as
+    # "Return to text".
+    for link in article.find_all("a"):
+        if link.get_text(
+            " ",
+            strip=True,
+        ).lower() == "return to text":
+            link.decompose()
+
+    # Remove inline footnote markers such as:
+    #
+    # <sup>2</sup>
+    #
+    # The actual footnote text at the bottom of the
+    # document is retained.
+    for sup in article.find_all("sup"):
+        sup.decompose()
+
+    blocks = []
+
+    # Extract the document title.
+    title = article.find("h3")
+
+    if title is not None:
+        title_text = title.get_text(
+            " ",
+            strip=True,
+        )
+
+        if title_text:
+            blocks.append(
+                title_text
+            )
+
+    # Extract ordinary prose and list items.
+    #
+    # <p> captures the main minutes text.
+    # <li> captures policy-directive list items.
+    for element in article.find_all(
+        [
+            "p",
+            "li",
+        ]
+    ):
+        text = element.get_text(
+            " ",
+            strip=True,
+        )
+
+        if text:
+            blocks.append(
+                text
+            )
+
+    minutes_text = "\n\n".join(
+        blocks
+    ).strip()
+
     if not minutes_text:
-        raise RuntimeError("The Fed minutes page contained no text.")
-    if "minutes of the federal open market committee" not in minutes_text.lower():
-        raise RuntimeError("The page does not appear to contain FOMC minutes.")
+        raise RuntimeError(
+            "The Federal Reserve minutes page contained no text."
+        )
+
+    if (
+        "minutes of the federal open market committee"
+        not in minutes_text.lower()
+    ):
+        raise RuntimeError(
+            "The page does not appear to contain FOMC minutes."
+        )
+
     return minutes_text
 
 
