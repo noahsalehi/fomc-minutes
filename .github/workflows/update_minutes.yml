@@ -3,7 +3,8 @@ name: Update FOMC minutes
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 19 * * 1-5"
+    - cron: '0 18 * * 3'
+    - cron: '0 19 * * 3'
 
 permissions:
   contents: write
