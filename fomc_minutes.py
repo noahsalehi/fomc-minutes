@@ -148,65 +148,127 @@ def _download_github_file(session: requests.Session, repository_path: str) -> st
         raise ValueError("GitHub blob did not contain Base64 file content.")
     return base64.b64decode(encoded_content).decode("utf-8-sig")
 
-
 def pull_fomc_minutes(
     meeting_date: str,
     save_path: Optional[str] = None,
     return_metadata: bool = False,
+    wait: bool = False,
+    retry_every: int = 10,
+    max_wait: int = 300,
 ) -> str | dict:
-    """Return minutes for a specific meeting date from the public repository."""
-    meeting_date = _normalise_date(meeting_date)
-    session = _create_session()
-    try:
+    """
+    Pull FOMC minutes from the public GitHub repository.
+
+    Parameters
+    ----------
+    meeting_date:
+        Final date of the FOMC meeting in YYYY-MM-DD format.
+
+    save_path:
+        Optional local text-file path.
+
+    return_metadata:
+        If False, return only the minutes text.
+        If True, return the complete metadata dictionary.
+
+    wait:
+        If True, retry when the requested minutes are not yet
+        available in the repository.
+
+    retry_every:
+        Number of seconds between retries.
+
+    max_wait:
+        Maximum number of seconds to wait for the minutes.
+
+    Returns
+    -------
+    str or dict
+        Minutes text or the complete minutes record.
+    """
+
+    normalised_date = _normalise_date(
+        meeting_date
+    )
+
+    repository_path = _minutes_repository_path(
+        normalised_date
+    )
+
+    start_time = time.monotonic()
+
+    while True:
+
+        session = _create_session()
+
         try:
             json_text = _download_github_file(
-                session, _minutes_repository_path(meeting_date)
+                session=session,
+                repository_path=repository_path,
             )
-        except FileNotFoundError as error:
-            raise FileNotFoundError(
-                f"No stored FOMC minutes were found for {meeting_date}. "
-                "Confirm the meeting date and check that the repository's "
-                "Update FOMC minutes workflow has completed successfully."
-            ) from error
-    finally:
-        session.close()
 
-    result = json.loads(json_text)
-    minutes_text = str(result.get("text", "")).strip()
+            # File exists, so leave retry loop.
+            break
+
+        except FileNotFoundError as error:
+
+            elapsed = time.monotonic() - start_time
+
+            if not wait:
+                raise FileNotFoundError(
+                    "FOMC minutes are not currently available for "
+                    f"meeting date {normalised_date}. "
+                    "Confirm that the minutes have been officially "
+                    "released and that the central repository has updated."
+                ) from error
+
+            if elapsed >= max_wait:
+                raise TimeoutError(
+                    "FOMC minutes did not become available for "
+                    f"meeting date {normalised_date} within "
+                    f"{max_wait} seconds."
+                ) from error
+
+            print(
+                f"Minutes for {normalised_date} are not available yet. "
+                f"Retrying in {retry_every} seconds..."
+            )
+
+        finally:
+            session.close()
+
+        time.sleep(retry_every)
+
+    result = json.loads(
+        json_text
+    )
+
+    minutes_text = str(
+        result.get("text", "")
+    ).strip()
+
     if not minutes_text:
-        raise ValueError("The stored minutes record contains no text.")
+        raise ValueError(
+            "The minutes record exists but contains no text."
+        )
 
     if save_path:
         output_path = Path(save_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(minutes_text, encoding="utf-8")
 
-    return result if return_metadata else minutes_text
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
+        output_path.write_text(
+            minutes_text,
+            encoding="utf-8",
+        )
 
-def list_available_minutes() -> list[dict]:
-    """List all meeting-minute records currently stored in the repository."""
-    session = _create_session()
-    try:
-        items = _github_get_json(session, _github_contents_url("minutes"))
-    finally:
-        session.close()
+    if return_metadata:
+        return result
 
-    if not isinstance(items, list):
-        raise ValueError("GitHub returned an unexpected minutes directory response.")
-
-    pattern = re.compile(r"^fomc_minutes_(\d{4}-\d{2}-\d{2})\.json$")
-    available = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        filename = str(item.get("name", ""))
-        match = pattern.match(filename)
-        if match:
-            available.append(
-                {"meeting_date": match.group(1), "filename": filename}
-            )
-    return sorted(available, key=lambda item: item["meeting_date"], reverse=True)
+    return minutes_text
 
 
 def pull_latest_fomc_minutes(
