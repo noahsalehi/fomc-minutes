@@ -380,37 +380,128 @@ def _save_minutes_record(
 
 
 def update_repository_minutes() -> int:
-    """Scrape Fed calendar and create any missing minutes JSON files."""
+    """
+    Scrape currently linked FOMC minutes and save missing files.
+
+    If no new minutes are initially available, retry using a short
+    exponential backoff in case a new release appears just after the
+    workflow begins.
+
+    This function is intended to run through GitHub Actions.
+
+    Returns
+    -------
+    int
+        Number of new minutes files created.
+    """
     session = _create_session()
+
     try:
-        calendar_html = _download_html(session, FED_CALENDAR_URL)
-        minutes_links = _find_minutes_links(calendar_html)
-        if not minutes_links:
-            raise RuntimeError("No FOMC minutes links were found on the Fed calendar.")
+        new_minutes = []
+
+        for delay in RELEASE_RETRY_DELAYS:
+
+            if delay:
+                print(
+                    f"No new FOMC minutes found. "
+                    f"Retrying in {delay} seconds..."
+                )
+                time.sleep(delay)
+
+            # Download a fresh copy of the Fed calendar page
+            # on every attempt.
+            calendar_html = _download_html(
+                session=session,
+                url=FED_CALENDAR_URL,
+            )
+
+            minutes_links = _find_minutes_links(
+                calendar_html
+            )
+
+            if not minutes_links:
+                raise RuntimeError(
+                    "No FOMC minutes links were found on "
+                    "the Federal Reserve calendar page."
+                )
+
+            new_minutes = []
+
+            for minutes_url in minutes_links:
+                meeting_date = _extract_meeting_date_from_url(
+                    minutes_url
+                )
+
+                if meeting_date is None:
+                    print(
+                        "Skipped unrecognised URL:",
+                        minutes_url,
+                    )
+                    continue
+
+                output_path = (
+                    MINUTES_DIRECTORY
+                    / _minutes_filename(meeting_date)
+                )
+
+                if output_path.exists():
+                    continue
+
+                new_minutes.append(
+                    (
+                        meeting_date,
+                        minutes_url,
+                    )
+                )
+
+            # Stop polling as soon as a new release appears.
+            if new_minutes:
+                break
+
+        if not new_minutes:
+            print(
+                "No new FOMC minutes found "
+                "after all retry attempts."
+            )
+            return 0
 
         created_count = 0
-        for minutes_url in minutes_links:
-            meeting_date = _extract_meeting_date_from_url(minutes_url)
-            if meeting_date is None:
-                print(f"Skipped unrecognised URL: {minutes_url}")
-                continue
 
-            output_path = MINUTES_DIRECTORY / _minutes_filename(meeting_date)
-            if output_path.exists():
-                continue
+        for meeting_date, minutes_url in new_minutes:
 
-            print(f"Downloading {meeting_date}: {minutes_url}")
-            minutes_html = _download_html(session, minutes_url)
-            minutes_text = _extract_minutes_text(minutes_html)
-            saved_path = _save_minutes_record(
-                meeting_date, minutes_url, minutes_text
+            print(
+                "Downloading:",
+                meeting_date,
+                minutes_url,
             )
-            print(f"Saved: {saved_path}")
+
+            minutes_html = _download_html(
+                session=session,
+                url=minutes_url,
+            )
+
+            minutes_text = _extract_minutes_text(
+                minutes_html
+            )
+
+            saved_path = _save_minutes_record(
+                meeting_date=meeting_date,
+                source_url=minutes_url,
+                minutes_text=minutes_text,
+            )
+
+            print(
+                "Saved:",
+                saved_path,
+            )
+
             created_count += 1
 
         return created_count
+
     finally:
         session.close()
+
 
 
 def _run_command_line() -> None:
