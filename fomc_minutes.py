@@ -18,6 +18,8 @@ import argparse
 import base64
 import json
 import re
+import time
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -29,7 +31,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # IMPORTANT: Replace this once with your GitHub username before uploading.
-GITHUB_OWNER = "will-j3ff"
+GITHUB_OWNER = "noahsalehi"
 GITHUB_REPOSITORY = "fomc-minutes"
 GITHUB_BRANCH = "main"
 
@@ -40,6 +42,14 @@ FED_CALENDAR_URL = (
 )
 MINUTES_DIRECTORY = Path("minutes")
 
+RELEASE_RETRY_DELAYS = [
+    0,
+    2,
+    4,
+    8,
+    16,
+    32,
+]
 
 def _create_session(github_token: Optional[str] = None) -> requests.Session:
     session = requests.Session()
