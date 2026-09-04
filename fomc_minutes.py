@@ -42,14 +42,8 @@ FED_CALENDAR_URL = (
 )
 MINUTES_DIRECTORY = Path("minutes")
 
-RELEASE_RETRY_DELAYS = [
-    0,
-    2,
-    4,
-    8,
-    16,
-    32,
-]
+RELEASE_POLL_INTERVAL = 2
+RELEASE_MAX_WAIT = 60
 
 def _create_session(github_token: Optional[str] = None) -> requests.Session:
     session = requests.Session()
@@ -455,9 +449,8 @@ def update_repository_minutes() -> int:
     """
     Scrape currently linked FOMC minutes and save missing files.
 
-    If no new minutes are initially available, retry using a short
-    exponential backoff in case a new release appears just after the
-    workflow begins.
+    If no new minutes are initially available, continue checking
+    the Federal Reserve calendar at a fixed interval.
 
     This function is intended to run through GitHub Actions.
 
@@ -469,16 +462,10 @@ def update_repository_minutes() -> int:
     session = _create_session()
 
     try:
+        start_time = time.monotonic()
         new_minutes = []
 
-        for delay in RELEASE_RETRY_DELAYS:
-
-            if delay:
-                print(
-                    f"No new FOMC minutes found. "
-                    f"Retrying in {delay} seconds..."
-                )
-                time.sleep(delay)
+        while True:
 
             # Download a fresh copy of the Fed calendar page
             # on every attempt.
@@ -530,12 +517,28 @@ def update_repository_minutes() -> int:
             if new_minutes:
                 break
 
-        if not new_minutes:
-            print(
-                "No new FOMC minutes found "
-                "after all retry attempts."
+            # No new release yet.
+            elapsed = (
+                time.monotonic()
+                - start_time
             )
-            return 0
+
+            if elapsed >= RELEASE_MAX_WAIT:
+                print(
+                    "No new FOMC minutes found "
+                    f"within {RELEASE_MAX_WAIT} seconds."
+                )
+                return 0
+
+            print(
+                "No new FOMC minutes published yet. "
+                f"Checking again in "
+                f"{RELEASE_POLL_INTERVAL} seconds..."
+            )
+
+            time.sleep(
+                RELEASE_POLL_INTERVAL
+            )
 
         created_count = 0
 
@@ -573,7 +576,6 @@ def update_repository_minutes() -> int:
 
     finally:
         session.close()
-
 
 
 def _run_command_line() -> None:
